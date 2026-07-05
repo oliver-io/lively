@@ -53,6 +53,7 @@ namespace Lively.Core
         private readonly IWatchdogService watchdog;
         private readonly IDisplayManager displayManager;
         private readonly IRunnerService runner;
+        private readonly IVirtualDesktopService virtualDesktop;
         private readonly WindowEventHook workerWHook;
 
         public WinDesktopCore(IUserSettingsService userSettings,
@@ -60,6 +61,7 @@ namespace Lively.Core
             ITransparentTbService ttbService,
             IWatchdogService watchdog,
             IRunnerService runner,
+            IVirtualDesktopService virtualDesktop,
             IWallpaperPluginFactory wallpaperFactory,
             IWallpaperLibraryFactory wallpaperLibraryFactory)
         {
@@ -68,6 +70,7 @@ namespace Lively.Core
             this.ttbService = ttbService;
             this.watchdog = watchdog;
             this.runner = runner;
+            this.virtualDesktop = virtualDesktop;
             this.wallpaperFactory = wallpaperFactory;
             this.wallpaperLibraryFactory = wallpaperLibraryFactory;
 
@@ -102,6 +105,9 @@ namespace Lively.Core
 
             // Initialize WorkerW
             UpdateWorkerW();
+
+            this.virtualDesktop.CurrentDesktopChanged += (s, e) => UpdateVirtualDesktopVisibility();
+            this.virtualDesktop.Start();
 
             try
             {
@@ -238,6 +244,7 @@ namespace Lively.Core
                             }
                             break;
                     }
+                    UpdateVirtualDesktopVisibility();
                     WallpaperChanged?.Invoke(this, EventArgs.Empty);
                 }
                 catch (WallpaperPluginFactory.MsixNotAllowedException ex1)
@@ -595,6 +602,36 @@ namespace Lively.Core
         private void SetupDesktop_WallpaperChanged(object sender, EventArgs e)
         {
             SaveWallpaperLayout();
+        }
+
+        /// <summary>
+        /// Shows/hides running wallpaper windows based on the WallpaperVirtualDesktopId
+        /// setting: hidden while another virtual desktop is active so its per-desktop
+        /// static wallpaper stays visible.
+        /// </summary>
+        public void UpdateVirtualDesktopVisibility()
+        {
+            try
+            {
+                var confined = Guid.TryParse(userSettings.Settings.WallpaperVirtualDesktopId, out Guid targetId);
+                var current = virtualDesktop.CurrentDesktopId;
+                // When the active desktop is unknown always show.
+                var visible = !confined || current == Guid.Empty || current == targetId;
+
+                foreach (var wallpaper in Wallpapers)
+                {
+                    NativeMethods.ShowWindow(wallpaper.Handle,
+                        (uint)(visible ? NativeMethods.SHOWWINDOW.SW_SHOWNA : NativeMethods.SHOWWINDOW.SW_HIDE));
+                }
+
+                // Clear frames persisting on the desktop after hiding.
+                if (!visible && Wallpapers.Count > 0)
+                    DesktopUtil.RefreshDesktop();
+            }
+            catch (Exception e)
+            {
+                Logger.Error($"Failed to update virtual desktop visibility: {e}");
+            }
         }
 
         readonly object layoutWriteLock = new object();

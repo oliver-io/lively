@@ -125,6 +125,11 @@ namespace Lively.Models
         /// Time in seconds between taskbar restart (hinting system instability) to stop Lively.
         /// </summary>
         public int TaskbarCrashTimeOutDelay { get; set; }
+        /// <summary>
+        /// Only show wallpaper(s) on this virtual desktop (Guid string), hidden on the others
+        /// so their per-desktop static wallpapers stay visible. Empty = show on all desktops.
+        /// </summary>
+        public string WallpaperVirtualDesktopId { get; set; }
 
         public SettingsModel()
         {
@@ -202,6 +207,7 @@ namespace Lively.Models
             ApplicationThemeBackgroundPath = null;
             ApplicationThemeBackground = AppThemeBackground.default_mica;
             TaskbarCrashTimeOutDelay = 30;
+            WallpaperVirtualDesktopId = string.Empty;
 
             try
             {
