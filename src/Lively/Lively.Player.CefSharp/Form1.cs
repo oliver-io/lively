@@ -357,8 +357,26 @@ namespace Lively.Player.CefSharp
                 settings.CefCommandLineArgs.Add("mute-audio", "1");
             //auto-play video without it being muted (default cef behaviour is overriden.)
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //disable smtc
-            settings.CefCommandLineArgs.Add("disable-features", "HardwareMediaKeyHandling");
+            //disable smtc; also disable native window-occlusion detection + renderer
+            //backgrounding. Confinement hides (SW_HIDE) the wallpaper while another virtual
+            //desktop is active; Chromium then marks the surface occluded and PAUSES the
+            //renderer, and after the window is shown+reparented back it stays paused - a live
+            //wallpaper freezes on its first desktop-switch round trip. Disabling occlusion
+            //keeps it rendering regardless of the transient hide.
+            settings.CefCommandLineArgs.Add("disable-features", "HardwareMediaKeyHandling,CalculateNativeWinOcclusion");
+            settings.CefCommandLineArgs.Add("disable-backgrounding-occluded-windows");
+            settings.CefCommandLineArgs.Add("disable-renderer-backgrounding");
+            //Chromium's GPU process creates an "Intermediate D3D Window" for its DirectComposition
+            //presentation. When the wallpaper is reparented under the desktop (Progman/WorkerW)
+            //that window becomes a child in the shell's window tree, so Explorer's synchronous
+            //broadcasts during desktop switches / Start-menu / wallpaper-service ops reach it.
+            //While the GPU thread is compositing it does not pump, and Explorer's SendMessage
+            //hangs the whole shell (WER AppHangXProcB1; verified by a WCT wait chain:
+            //explorer desktop thread -> SendMessage -> blocked CefSharp.BrowserSubprocess GPU
+            //thread owning the "Intermediate D3D Window"). That window is a D3D11-presentation
+            //artifact; forcing ANGLE onto its OpenGL backend avoids it while keeping the surface
+            //GPU-rendered and repainting continuously.
+            settings.CefCommandLineArgs.Add("use-angle", "gl");
             settings.LogFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Lively Wallpaper", "Cef", "logfile.txt");
 
