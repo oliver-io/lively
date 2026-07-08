@@ -1,4 +1,4 @@
-﻿using Lively.Common;
+using Lively.Common;
 using Lively.Common.Com;
 using Lively.Common.Exceptions;
 using Lively.Common.Extensions;
@@ -57,6 +57,9 @@ namespace Lively.Core
         private readonly RawInputMsgWindow rawInput;
         private readonly WndProcMsgWindow WndProc;
         private readonly IDisplayManager displayManager;
+        private readonly IVirtualDesktopService virtualDesktop;
+        private readonly Timer desktopRefreshTimer;
+        private const int desktopRefreshDelayMs = 300;
         private readonly WindowEventHook workerWHook;
 
         public WinDesktopCore(IUserSettingsService userSettings,
@@ -66,6 +69,7 @@ namespace Lively.Core
             IWatchdogService watchdog,
             RawInputMsgWindow rawInput,
             WndProcMsgWindow wndProc,
+            IVirtualDesktopService virtualDesktop,
             IWallpaperPluginFactory wallpaperFactory,
             IWallpaperLibraryFactory wallpaperLibraryFactory)
         {
@@ -76,6 +80,7 @@ namespace Lively.Core
             this.playback = playback;
             this.rawInput = rawInput;
             this.WndProc = wndProc;
+            this.virtualDesktop = virtualDesktop;
             this.wallpaperFactory = wallpaperFactory;
             this.wallpaperLibraryFactory = wallpaperLibraryFactory;
 
@@ -97,6 +102,20 @@ namespace Lively.Core
 
             // Initialize desktop and update handles.
             SetupDesktopLayer();
+
+            desktopRefreshTimer = new Timer(_ =>
+            {
+                try
+                {
+                    RefreshDesktop();
+                }
+                catch (Exception e)
+                {
+                    Logger.Error($"Deferred desktop refresh failed: {e}");
+                }
+            }, null, Timeout.Infinite, Timeout.Infinite);
+            this.virtualDesktop.CurrentDesktopChanged += (s, e) => UpdateVirtualDesktopVisibility();
+            this.virtualDesktop.Start();
 
             try
             {
@@ -366,6 +385,7 @@ namespace Lively.Core
                             }
                             break;
                     }
+                    UpdateVirtualDesktopVisibility();
                     WallpaperChanged?.Invoke(this, EventArgs.Empty);
                 }
                 catch (WallpaperPluginFactory.MsixNotAllowedException ex1)
@@ -615,6 +635,46 @@ namespace Lively.Core
         private void SetupDesktop_WallpaperChanged(object sender, EventArgs e)
         {
             SaveWallpaperLayout();
+        }
+
+        /// <summary>
+        /// Applies the WallpaperVirtualDesktopId confinement: while another virtual desktop
+        /// is active the wallpaper windows are hidden so that desktop's own static wallpaper
+        /// stays visible, and shown again when the confined desktop becomes active.
+        /// </summary>
+        public void UpdateVirtualDesktopVisibility()
+        {
+            try
+            {
+                var confined = Guid.TryParse(userSettings.Settings.WallpaperVirtualDesktopId, out Guid targetId);
+                var current = virtualDesktop.CurrentDesktopId;
+                // When the active desktop is unknown always show.
+                var visible = !confined || current == Guid.Empty || current == targetId;
+
+                // Hide in place; do NOT detach from the desktop tree. Detaching (SetParent out
+                // and back, an earlier approach) corrupts the reparented Chromium surface so a
+                // web wallpaper freezes after its first desktop-switch round trip. SW_HIDE lets
+                // the target desktop's own wallpaper show through, and the CefSharp player is
+                // launched with native occlusion + renderer backgrounding disabled so the hidden
+                // surface keeps rendering and is live the instant it is shown again.
+                foreach (var wallpaper in Wallpapers)
+                {
+                    NativeMethods.ShowWindow(wallpaper.Handle,
+                        (uint)(visible ? NativeMethods.SHOWWINDOW.SW_SHOWNA : NativeMethods.SHOWWINDOW.SW_HIDE));
+                }
+
+                // Clear frames persisting on the desktop after hiding. SPI_SETDESKWALLPAPER is a
+                // heavyweight synchronous shell call, so defer it until the switch (and any rapid
+                // switch burst) settles; becoming visible again first makes it moot and cancels it.
+                if (!visible && Wallpapers.Count > 0)
+                    desktopRefreshTimer?.Change(desktopRefreshDelayMs, Timeout.Infinite);
+                else
+                    desktopRefreshTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+            catch (Exception e)
+            {
+                Logger.Error($"Failed to update virtual desktop visibility: {e}");
+            }
         }
 
         readonly object layoutWriteLock = new object();
@@ -1296,6 +1356,7 @@ namespace Lively.Core
                 if (disposing)
                 {
                     WallpaperChanged -= SetupDesktop_WallpaperChanged;
+                    desktopRefreshTimer?.Dispose();
                     workerWHook?.Dispose();
                     CloseAllWallpapers(false);
                     RefreshDesktop();
